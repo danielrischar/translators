@@ -13,5 +13,19 @@
   </schemas>
   <!-- associated onboarding module -->
   <onboarding id="org.opent2t.onboarding.wifi.wemo">
+    <onboardflow name="getUserInput">
+        <flow type="input">
+          <arg name="ssid" />
+          <description language="en">What WiFi network do you want to use?</description>
+        </flow>
+        <flow type="password">
+          <arg name="password"  />
+          <description language="en">Type in your WiFi password</description>
+        </flow>
+        <flow type="input">
+          <arg name="access" />
+          <description language="en">What is the current device address?</description>
+        </flow>
+      </onboardflow>
   </onboarding>
 </manifest>
