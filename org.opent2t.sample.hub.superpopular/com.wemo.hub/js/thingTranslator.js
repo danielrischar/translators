@@ -12,10 +12,8 @@ var Onboarding = require('opent2t-onboarding-org-opent2t-onboarding-wifi-wemo');
 * This translator class implements the "Hub" interface.
 */
 class Translator {
-    constructor(accessToken) {
-        this._accessToken = accessToken;
-
-        this._name = "Wemo Hub"; // TODO: Can be pulled from OpenT2T global constants. This information is not available, at least, on wink hub.
+    constructor() {
+        this._name = "Wemo Hub";
     }
 
     /**
@@ -47,8 +45,7 @@ class Translator {
             // WeMo doesn't have a concept of "paired" devices, so this will discover all WeMo devices
             // on the current network
             var platforms = [];
-            var onboarder = new Onboarding();
-            return onboarder.discover(callback, 10000).then((devicesFound) => {
+            return Onboarding.discover(10000).then((devicesFound) => {
                 return this._providerSchemaToPlatformSchema(devicesFound, expand);
             });
         }
@@ -75,29 +72,22 @@ class Translator {
         var wemoDevices = [].concat(providerSchemas);
 
         wemoDevices.forEach((wemoDevice) => {
-            // get the opent2t schema and translator for the wink device
+            // get the opent2t schema and translator for the wemo device
             var opent2tInfo = this._getOpent2tInfo(wemoDevice);
             
-            // Do not return the physical hub device, nor any devices for which there are not translators.
-            // Additionally, do not return devices that have been marked as hidden by Wink (hidden_at is a number)
-            // This state is used by third party devices (such as a Nest Thermostat) that were connected to a
-            // Wink account and then removed.  Wink keeps the connection, but marks them as hidden.
             if (typeof opent2tInfo !== 'undefined')
             {
-                // set the opent2t info for the wink device
+                // set the opent2t info for the wemo device
                 var deviceInfo = {};
-                deviceInfo.opent2t = {};
-                deviceInfo.opent2t.controlId = this._getDeviceId(wemoDevice);
-                
+                deviceInfo.opent2t = wemoDevice; // Store the device as opent2t data including controlId
+
                 // Create a translator for this device and get the platform information, possibly expanded
                 platformPromises.push(OpenT2T.createTranslatorAsync(opent2tInfo.translator, {'deviceInfo': deviceInfo, 'hub': this})
                     .then((translator) => {
 
-                        // Use get to translate the Wink formatted device that we already got in the previous request.
-                        // We already have this data, so no need to make an unnecesary request over the wire.
-                        return OpenT2T.invokeMethodAsync(translator, opent2tInfo.schema, 'get', [expand, winkDevice])
+                        return OpenT2T.invokeMethodAsync(translator, opent2tInfo.schema, 'get', [expand])
                             .then((platformResponse) => {
-                                return platformResponse; 
+                                return platformResponse;
                             });
                     }));
             }

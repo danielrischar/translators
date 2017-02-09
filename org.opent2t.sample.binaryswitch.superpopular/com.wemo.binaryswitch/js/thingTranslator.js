@@ -2,7 +2,6 @@
 
 var q = require('q');
 var wemoClient = require('wemo-client');
-var wemo = new wemoClient();
 var url = require('url');
 
 function validateArgumentType(arg, argName, expectedType) {
@@ -70,8 +69,39 @@ function findResource(schema, di, resourceId) {
     return resource;
 }
 
+/**
+ * Discovers the address etc. for a device given a UUID if
+ * it is not already cached.
+ */
+function getDevice(uuid) {
+    console.log("starting discovery for: " + uuid);
+    var deferred = q.defer();
+    
+    if (wemoDeviceInfoCache) {
+        deferred.resolve(wemoDeviceInfoCache);
+    }
+
+    wemo.discover( (deviceInfo) => {
+        if (deviceInfo.UDN === uuid) {
+            console.log("found the device " + uuid);
+            wemoDeviceInfoCache = deviceInfo;
+            deferred.resolve(deviceInfo);
+        }
+
+        // Cancel discovery and timeout if the device isn't found quickly
+        setTimeout( () => {
+            deferred.reject("Could not find WeMo device");
+        }, 3000);
+    });
+
+    return deferred.promise;
+}
+
 // Each device in the platform has its own static identifier
 const wemoSwitchDi = '1E840508-9E48-4459-8DD7-1D954935B482';
+
+var wemo = new wemoClient();
+var wemoDeviceInfoCache;
 
 /**
  * This translator class implements the 'org.opent2t.sample.binaryswitch.superpopular' interface.
@@ -81,21 +111,19 @@ class Translator {
     constructor(deviceInfo) {
         validateArgumentType(deviceInfo, "deviceInfo", "object");
         
-        this.deviceInfo = deviceInfo;
+        console.log("Initializing WeMo binary switch for " + deviceInfo.deviceInfo.opent2t.controlId);
+        this.deviceInfo = deviceInfo.deviceInfo;
 
-        // Address contains all parts of the URL from the discovery process
-        // Path is ignored as it is captured from the serviceList
-        var addressUrl = url.parse(deviceInfo.address);
+        // deviceInfo : {
+        //     opent2t: {
+        //         controlId: "uuid"
+        //     }
+        // }
 
-        var wemoDeviceInfo = {
-            host: addressUrl.hostname,
-            port: addressUrl.port,
-            deviceType: deviceInfo.deviceType,
-            UDN: deviceInfo.controlId,
-            serviceList: deviceInfo.raw.root.device.serviceList
-        };
-
-        this.wemoClient = wemo.client(wemoDeviceInfo);
+        // The deviceInfo contains the UUID for this device, as the address can changes
+        // the device needs to be re-discovered to get the address prior to first use.
+        // This is a quick process (SSDP discovery of a uPnP device) but the constructor isn'to
+        // the appropriate place for it.  Instead, do the discovery lazily the first time it is needed.
     }
 
     /**
@@ -107,17 +135,18 @@ class Translator {
             return  providerSchemaToPlatformSchema(payload, this.deviceInfo, expand);
         }
         else {
-            var deferred = q.defer();
-
-            this.wemoClient.getBinaryState((err, state) => {
-                if (!err && state) {
-                    deferred.resolve(providerSchemaToPlatformSchema(state, this.deviceInfo, expand));
-                } else {
-                    deferred.reject(err);
-                }
-            });
-
-            return deferred.promise;
+            return getDevice(this.deviceInfo.opent2t.controlId).then( (deviceInfo) => {
+                var deferred = q.defer();
+                var client = wemo.client(deviceInfo);
+                client.getBinaryState((err, state) => {
+                    if (!err && state) {
+                        deferred.resolve(providerSchemaToPlatformSchema(state, this.deviceInfo, expand));
+                    } else {
+                        deferred.reject(err);
+                    }
+                });
+                return deferred.promise;
+            });   
         }
     }
 
@@ -125,14 +154,14 @@ class Translator {
      * Get the power resource from the binary switch
      */
     getDevicesPower(di) {
-        return this._getDeviceResource(di, 'power');
+        return this.getDeviceResource(di, 'power');
     }
 
     /** 
      * Post the power resource to the binary switch
      */
     postDevicesPower(di, payload) {
-        return this._postDeviceResource(di, 'power', payload);
+        return this.postDeviceResource(di, 'power', payload);
     }
 
     /** 
@@ -168,17 +197,20 @@ class Translator {
 
             if (resourceId == 'power') {
                 var state = payload.value ? 1 : 0;
-                this.wemoClient.setBinaryState(state, (err, stat) => {
-                    if (!err  && state != undefined) {
-                        // Convert the new state back to OCF
-                        var schema = providerSchemaToPlatformSchema(state, this.deviceInfo, true);
-                        deferred.resolve(findResource(schema, di, resourceId));
-                    } else {
-                        deferred.reject(err);
-                    }
-                });
+                return getDevice(this.deviceInfo.opent2t.controlId).then( (deviceInfo) => {
+                    var client = wemo.client(deviceInfo);
+                    client.setBinaryState(state, (err, stat) => {
+                        if (!err  && state != undefined) {
+                            // Convert the new state back to OCF
+                            var schema = providerSchemaToPlatformSchema(state, this.deviceInfo, true);
+                            deferred.resolve(findResource(schema, di, resourceId));
+                        } else {
+                            deferred.reject(err);
+                        }
+                    });
 
-                return deferred.promise;
+                    return deferred.promise;
+                }); 
             }
         }
     }
