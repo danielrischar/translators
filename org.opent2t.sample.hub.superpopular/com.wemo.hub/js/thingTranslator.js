@@ -28,25 +28,24 @@ class Translator {
      * 
      * @param {bool} expand - True to include the current state of the resources.
      * @param {Buffer} payload - POST content for a subscribed notification
-     * @param {Object} verification - Information used to authenticate that the post is valid
-     * @param {Array} verification.header - Header information that came with the payload POST.
-     *      Should include X-Hub-Signature
-     * @param {verification} verification.key - Secret key used to hash the payload (provided to Wink on subscribe)
      */
-    getPlatforms(expand, payload, verification) {
+    getPlatforms(expand, payload) {
 
         // Payload can contain one or more platforms defined using the provider schema.  This should return those platforms
         // converted to the opent2t/ocf representation.
         if (payload !== undefined) {
-            // Return the verified payload 
             return this._providerSchemaToPlatformSchema(payload, expand);
         }
         else {
             // WeMo doesn't have a concept of "paired" devices, so this will discover all WeMo devices
             // on the current network
-            var platforms = [];
-            return Onboarding.discover(10000).then((devicesFound) => {
-                return this._providerSchemaToPlatformSchema(devicesFound, expand);
+            return Onboarding.discover(3000).then((devicesFound) => {
+                // devices found contain the raw data from Wemo which can be translated
+                var rawDevices = [];
+                devicesFound.forEach( (device) => {
+                    rawDevices.push(device.raw);
+                });
+                return this._providerSchemaToPlatformSchema(rawDevices, expand);
             });
         }
     }
@@ -65,26 +64,26 @@ class Translator {
     /**
      * Translates an array of provider schemas into an opent2t/OCF representations
      */
-    _providerSchemaToPlatformSchema(providerSchemas, expand) {
+    _providerSchemaToPlatformSchema(rawProviderSchemas, expand) {
         var platformPromises = [];
 
         // Ensure that we have an array of provider schemas, even if a single object was given.
-        var wemoDevices = [].concat(providerSchemas);
+        var rawWemoDevices = [].concat(rawProviderSchemas);
 
-        wemoDevices.forEach((wemoDevice) => {
+        rawWemoDevices.forEach((rawWemoDevice) => {
             // get the opent2t schema and translator for the wemo device
-            var opent2tInfo = this._getOpent2tInfo(wemoDevice);
+            var opent2tInfo = this._getOpent2tInfo(rawWemoDevice.deviceType);
             
             if (typeof opent2tInfo !== 'undefined')
             {
                 // set the opent2t info for the wemo device
                 var deviceInfo = {};
-                deviceInfo.opent2t = wemoDevice; // Store the device as opent2t data including controlId
+                deviceInfo.opent2t = opent2tInfo;
+                deviceInfo.opent2t.controlId = rawWemoDevice.UDN;
 
                 // Create a translator for this device and get the platform information, possibly expanded
                 platformPromises.push(OpenT2T.createTranslatorAsync(opent2tInfo.translator, {'deviceInfo': deviceInfo, 'hub': this})
                     .then((translator) => {
-
                         return OpenT2T.invokeMethodAsync(translator, opent2tInfo.schema, 'get', [expand])
                             .then((platformResponse) => {
                                 return platformResponse;
@@ -106,8 +105,8 @@ class Translator {
     /** 
      * Given the hub specific device, returns the opent2t schema and translator
     */
-    _getOpent2tInfo(wemoDevice) {
-        if (wemoDevice.deviceType == "urn:Belkin:device:controllee:1") {
+    _getOpent2tInfo(deviceType) {
+        if (deviceType == "urn:Belkin:device:controllee:1") {
             return { 
                 "schema": 'org.opent2t.sample.binaryswitch.superpopular',
                 "translator": "opent2t-translator-com-wemo-binaryswitch"

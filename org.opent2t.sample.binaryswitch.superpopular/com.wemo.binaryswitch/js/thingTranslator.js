@@ -17,18 +17,17 @@ function validateArgumentType(arg, argName, expectedType) {
 /**
  * Helper method to convert the provider schema to the platform schema.
  */ 
-function providerSchemaToPlatformSchema(providerState, deviceInfo, expand) {
-    var powered = (providerState == 0) ? false : true;
-    
+function providerSchemaToPlatformSchema(deviceInfo, expand, powerState) {
+
     var power = {
         href: '/power',
         rt: ['oic.r.switch.binary'],
         if: ['oic.if.a', 'oic.if.baseline']
     };
 
-    if (expand) {
+    if (expand && powerState) {
         power.id = 'power';
-        power.value = powered;
+        power.value = (powerState == 0) ? false : true;;
     }
 
     return {
@@ -74,7 +73,6 @@ function findResource(schema, di, resourceId) {
  * it is not already cached.
  */
 function getDevice(uuid) {
-    console.log("starting discovery for: " + uuid);
     var deferred = q.defer();
     
     if (wemoDeviceInfoCache) {
@@ -83,7 +81,6 @@ function getDevice(uuid) {
 
     wemo.discover( (deviceInfo) => {
         if (deviceInfo.UDN === uuid) {
-            console.log("found the device " + uuid);
             wemoDeviceInfoCache = deviceInfo;
             deferred.resolve(deviceInfo);
         }
@@ -132,20 +129,30 @@ class Translator {
      */
     get(expand, payload) {
         if (payload) {
-            return  providerSchemaToPlatformSchema(payload, this.deviceInfo, expand);
+            throw new Error("not implemented");
         }
         else {
             return getDevice(this.deviceInfo.opent2t.controlId).then( (deviceInfo) => {
-                var deferred = q.defer();
-                var client = wemo.client(deviceInfo);
-                client.getBinaryState((err, state) => {
-                    if (!err && state) {
-                        deferred.resolve(providerSchemaToPlatformSchema(state, this.deviceInfo, expand));
-                    } else {
-                        deferred.reject(err);
-                    }
-                });
-                return deferred.promise;
+
+                // Only get the current switch values if expand is true
+                if (expand) {
+                     var deferred = q.defer();
+                    // Get the power state of the switch
+                    var client = wemo.client(deviceInfo);
+
+                    // Get the power state of the switch
+                    client.getBinaryState((err, state) => {
+                        if (!err && state) {
+                            deferred.resolve(providerSchemaToPlatformSchema(deviceInfo, expand, state));
+                        } else {
+                            deferred.reject(err);
+                        }
+                    });
+
+                    return deferred.promise;
+                }
+
+                return providerSchemaToPlatformSchema(deviceInfo, expand);
             });   
         }
     }
@@ -199,10 +206,10 @@ class Translator {
                 var state = payload.value ? 1 : 0;
                 return getDevice(this.deviceInfo.opent2t.controlId).then( (deviceInfo) => {
                     var client = wemo.client(deviceInfo);
-                    client.setBinaryState(state, (err, stat) => {
-                        if (!err  && state != undefined) {
+                    client.setBinaryState(state, (err, newState) => {
+                        if (!err  && newState != undefined) {
                             // Convert the new state back to OCF
-                            var schema = providerSchemaToPlatformSchema(state, this.deviceInfo, true);
+                            var schema = providerSchemaToPlatformSchema(deviceInfo, true, newState.BinaryState);
                             deferred.resolve(findResource(schema, di, resourceId));
                         } else {
                             deferred.reject(err);
