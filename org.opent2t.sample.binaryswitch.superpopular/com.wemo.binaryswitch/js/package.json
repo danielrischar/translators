@@ -20,8 +20,7 @@
   },
   "dependencies": {
      "q": "^1.4.1",
-     "wemo-client": "^0.11.2",
-     "opent2t-onboarding-org-opent2t-onboarding-wifi-wemo": "^0.0.1"
+     "wemo-client": "^0.11.2"
   },
   "devDependencies": {
       "ava": "^0.15.2"
