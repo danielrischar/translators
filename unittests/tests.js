@@ -90,17 +90,13 @@ function runTranslatorTests(settings) {
         });
     });
 
-    test.skip.serial('GetSubscribe', t => {
-        t.fail("Not Implemented");
-    });
+    test.todo.serial('GetSubscribe');
 
-    test.skip.serial('PostSubscribe', t => {
-        t.fail("Not Implemented");
-    });
+    test.todo.serial('PostSubscribe');
 
-    test.skip.serial('DeleteSubscribe', t => {
-        t.fail("Not Implemented");
-    });
+    test.todo.serial('DeleteSubscribe');
+
+    test.todo.serial('GetAvailability');
 }
 
 module.exports = runTranslatorTests;
