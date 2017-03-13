@@ -314,18 +314,20 @@ function scaleValue(value, originalRange, newRange, round = false) {
     }
 
     var newValue = (value / originalRange) * newRange;
-    
     return round ? Math.round(newValue) : newValue;
 }
 
 
 /**
+ * Gets the supported colour modes for a Wink bulb, named as resource schema properties.
+ * 
  * Gets the lightbulb data from Wink, and uses it to figure out what colour modes are supported.
- * This is because Wink will allow us to set the wrong mode with an undetectble failure.
- * We can't just use provicerSchema.capabilities.fields to get color_models because it lists
+ * This is needed because Wink will allow us to set the wrong mode with an undetectable failure.
+ * We can't just use providerSchema.capabilities.fields to get color_models because it lists
  * modes that the bulb cannot use.
  * 
- * Returns the supported modes as well as their values, as Wink names (rgb, hsb, xy, color_temperature)
+ * Bulbs always expose the properties of the colours that they support, regardless of what color_model
+ * is currently active.
  */
 function getProviderColourModes(providerSchema) {
     var supportedModes = [];
@@ -351,18 +353,23 @@ function getProviderColourModes(providerSchema) {
 }
 
 /**
- * Given the colours in the resource, and a Wink provider schema,
- * pick a color_model for the Wink lightbulb and return the desired state
+ * Given a Wink provider formatted Schema, and a colour resource object,
+ * choose the best color_model to apply the the bulb, in the event that the
+ * requested mode (inferred by the resource properties) is not supported.
  * 
- * Priority is RGB > HSB > XYZ if the original mode is not supported.
+ * Priority is RGB > HSB > XYZ if the requested mode is not supported.
  * If the resource is attempting to set more than one color mode, the first
- * will be used (eg: hue, saturaton and csc are all values
+ * will be used (eg: if hue, saturaton and csc are all values, hsb will be used)
  * 
  * This method exists because Wink doesn't report what modes are supported,
- * and setting the wrong mode results in a silent failure without changing
- * the colour.
+ * and setting the wrong mode results in a silent failure.
  * 
- * NOTE: xyz/csc is not supported for the time being
+ * A side effect is that this method may result in a change to brightness as
+ * a result of applying an RGB resource to a hsb bulb.  This is desired in order
+ * to properly display the color.
+ * 
+ * NOTE: xyz/csc is not supported for the time being because we haven't found
+ * a bulb that supports it.
  */
 function getDesiredColourState(providerSchema, resourcePayload) {
     var state = {};
@@ -380,7 +387,13 @@ function getDesiredColourState(providerSchema, resourcePayload) {
             rgbValue = resourcePayload.rgbValue;
         } else if (winkModes.indexOf('hsb') != -1) {
             // RGB -> HSB [0-360],[0-100],[0-100]
-            hsbValue = colorConvert.rgb.hsv(resourcePayload.rgbValue);
+            // ParseInt ensures that the data in the resoruce payload is sanitized as a string will
+            // break the color-convert library, also ensures that they are integers.
+            hsbValue = colorConvert.rgb.hsv(
+                parseInt(resourcePayload.rgbValue[0]),
+                parseInt(resourcePayload.rgbValue[1]),
+                parseInt(resourcePayload.rgbValue[2])
+            );
         }
     } else if (resourcePayload.hasOwnProperty('hue')) {
         if (winkModes.indexOf('hsb') != -1) {
@@ -388,7 +401,7 @@ function getDesiredColourState(providerSchema, resourcePayload) {
             hsbValue = [resourcePayload.hue, resourcePayload.saturation, scaleValue(stateReader.get('brightness'), 1.0, 100)];
         } else if (winkModes.indexOf('rgb') != -1) {
             // HSB -> RGB [0-255],[0-255],[0-255]
-            rgbValue = colorConvert.hsb.rgb([
+            rgbValue = colorConvert.hsv.rgb([
                 resourcePayload.hue,
                 resourcePayload.saturation,
                 scaleValue(stateReader.get('brightness'), 1.0, 100)
@@ -399,13 +412,11 @@ function getDesiredColourState(providerSchema, resourcePayload) {
             // CT -> CT [Kelvin]
             ctValue = resourcePayload.ct;
         }
-    } else {
-        throw new OpenT2TError(400, OpenT2TConstants.InvalidResourceValue);
     }
 
     if (rgbValue) {
         // Set mode to rgb and convert rgb to hex string (without #)
-        state.color = colorConvert.rgb.hex(rgbValue);;
+        state.color = colorConvert.rgb.hex(rgbValue);
     } else if (hsbValue) {
         //  Set mode to hsb, scale hue, saturaton and brightness to [0-1.0]
         state.color_model = 'hsb';
@@ -416,6 +427,11 @@ function getDesiredColourState(providerSchema, resourcePayload) {
         // Set mode to colour temperature, and convert Kelvin to Mired
         state.color_model = 'color_temperature';
         state.color_temperature = 1000000 / ctValue;
+    }
+
+    if (Object.keys(state).length == 0) {
+        // No state was applied, so no valid conversion was available.
+        throw new OpenT2TError(400, "Requested colour mode is unsupported by the platform");
     }
 
     return { desired_state: state };
@@ -504,7 +520,7 @@ function providerSchemaToPlatformSchema(providerSchema, expand) {
             bulbInfo.modes = ['ct'];
             break;
         default:
-            // Unknown colour mode, so Opent2t cannot control it.  This is not
+            // Unknown colour mode, so OpenT2T cannot control it.  This is not
             // an error, but missing functionality, and colour will not be supported.
     }
 
@@ -530,51 +546,6 @@ function providerSchemaToPlatformSchema(providerSchema, expand) {
             }
         ]
     };
-}
-
-/**
- * Converts an OCF platform/resource schema for calls to the Wink API
- */
-function resourceSchemaToProviderSchema(resourceId, resourceSchema, existingProviderSchema) {
-    // build the object with desired state
-    var result = {};
-    result.desired_state = existingProviderSchema ? existingProviderSchema.desired_state : {};
-    
-    var desired_state = result.desired_state;
-
-    switch(resourceId) {
-        case 'power':
-            validateHasOwnProperty(resourceSchema, 'value');
-            desired_state['powered'] = resourceSchema.value;
-            break;
-        case 'dim':
-            validateHasOwnProperty(resourceSchema, 'dimmingSetting');
-            desired_state['brightness'] = scaleValue(resourceSchema.dimmingSetting, 100, 1.0);
-            break;
-        case 'colourMode':
-            validateHasOwnProperty(resourceSchema, 'modes');
-            // Not directly mutable at this point, is set by the colour resources themselves
-            if (resourceSchema.modes.length == 1) {
-                // Try to set the mode, a bad mode won't error.
-                // It will sit in desired_state for 2 minutes and then go away.
-                desired_state['color_model'] = resourceSchema.modes[0];
-            } else {
-                // Either no mode was provided, or more than one
-                throw new OpenT2TError(400, "Put an error string here.");
-            }
-            break;
-        case 'colourRGB':
-        case 'colourChroma':
-            // colourRGB and colourChroma are managed directly by getDesiredColourState
-            // Colour is a special case because it requires a GET in order to know which
-            // modes are supported.
-            break;
-        default:
-            // Error case
-            throw new OpenT2TError(400, OpenT2TConstants.InvalidResourceId);
-    }
-
-    return result;
 }
 
 // Each device in the platform has is own unique static identifier
@@ -626,47 +597,13 @@ class Translator {
      * Updates the specified resource with the provided payload.
      */
     postDeviceResource(di, resourceId, payload) {
-
-        // Color needs special handling to ensure that it gets converted into something
-        // that Wink understands.  This is more difficult than it sounds.
-        if (resourceId === 'colourChroma' || resourceId === 'colourRGB') {
-            return this._postConvertedColourResource(di, resourceId, payload);
-        }
-
-        var putPayload = resourceSchemaToProviderSchema(resourceId, payload);
-
-        return this.winkHub.putDeviceDetailsAsync(this.deviceType, this.controlId, putPayload)
-            .then((response) => {
-                var schema = providerSchemaToPlatformSchema(response.data, true);
-
-                return findResource(schema, di, resourceId);
-            });
-    }
-
-    /**
-     * Updates the specified resources with the provided payloads as a single transaction
-     */
-    postDeviceResources(di, resourceIds, payloads) {
-        var putPayload;
-
-        if (resourceIds.length != payloads.length) {
-            throw new OpenT2TError(0, "booooo hisss");
-        }
-
-        for (var i = 0; i < resourceIds.length; i++) {
-            putPayload = resourceSchemaToProviderSchema(resourceIds[i], payloads[i], putPayload);
-        }
-
-        return this.winkHub.putDeviceDetailsAsync(this.deviceType, this.controlId, putPayload)
-            .then((response) => {
-                var schema = providerSchemaToPlatformSchema(response.data, true);
-
-                var result = [];
-                for(var i = 0; i < resourceIds.length; i++) {
-                    result.push(findResource(schema, di, resourceIds[i]));
-                }
-
-                return result;
+        return this._resourceSchemaToProviderSchemaAsync(resourceId, payload)
+            .then((putPayload) => {
+                return this.winkHub.putDeviceDetailsAsync(this.deviceType, this.controlId, putPayload)
+                    .then((response) => {
+                        var schema = providerSchemaToPlatformSchema(response.data, true);
+                        return findResource(schema, di, resourceId);
+                    });
             });
     }
 
@@ -723,26 +660,44 @@ class Translator {
     }
 
     /**
-     * Converts a colour resource into a supported colour for the device.
-     * Though Wink reports supported colour modes in capabilites, this information can be inaccurate
-     * and setting an unsupported mode results in a silent failure.
-     * Due to the way that OpenT2T manages colour resourse (colourRGB should always be returned),
-     * the translator doesn't know if the colourResource is supported at the time of the post.
-     * Instead, the translator needs to first get the state of the device in order to figure out what is 
-     * supported based on the colour properties that are available. 
+     * Converts an OCF platform/resource schema for calls to the Wink API
      */
-    _postConvertedColourResource(di, resourceId, payload) {
-        // Get the device from Wink in order to figure out which colour modes are actually supported
-        return this.winkHub.getDeviceDetailsAsync(this.deviceType, this.controlId).then((providerSchema) => {
-            var putPayload = getDesiredColourState(providerSchema.data, payload);
-            return this.winkHub.putDeviceDetailsAsync(this.deviceType, this.controlId, putPayload)
-                .then((response) => {
-                    var schema = providerSchemaToPlatformSchema(response.data, true);
-                    return findResource(schema, di, resourceId);
-                });
-        });
-    }
+    _resourceSchemaToProviderSchemaAsync(resourceId, resourceSchema, existingProviderSchema) {
+        // build the object with desired state
+        var result = {};
+        result.desired_state = existingProviderSchema ? existingProviderSchema.desired_state : {};
+        
+        var desired_state = result.desired_state;
 
+        switch(resourceId) {
+            case 'power':
+                validateHasOwnProperty(resourceSchema, 'value');
+                desired_state['powered'] = resourceSchema.value;
+                break;
+            case 'dim':
+                validateHasOwnProperty(resourceSchema, 'dimmingSetting');
+                desired_state['brightness'] = scaleValue(resourceSchema.dimmingSetting, 100, 1.0);
+                break;
+            case 'colourMode':
+                validateHasOwnProperty(resourceSchema, 'modes');
+                // Try to set the mode, a bad mode won't error.
+                // It will sit in desired_state for 2 minutes and then go away.
+                desired_state['color_model'] = resourceSchema.modes[0];
+                break;
+            case 'colourRGB':
+            case 'colourChroma':
+                // Get the device from Wink in order to figure out which colour modes are actually supported
+                return this.winkHub.getDeviceDetailsAsync(this.deviceType, this.controlId).then((providerSchema) => {
+                    return getDesiredColourState(providerSchema.data, resourceSchema);
+                });
+                break;
+            default:
+                // Error case
+                return Promise.reject(OpenT2TConstants.InvalidResourceId);
+        }
+
+        return Promise.resolve(result);
+    }
 }
 
 // Export the translator from the module.
