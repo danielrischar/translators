@@ -1,0 +1,18 @@
+{
+  "name": "opent2t-translator-generators",
+  "version": "0.0.1",
+  "description": "Generators for OpenT2T platforms, devices and resources.",
+  "homepage": "http://opentranslatorstothings.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/opent2t/translators.git"
+  },
+  "main": "deviceBuilder.js",
+  "license": "MIT",
+  "dependencies": {
+    "json-schema-ref-parser": "^3.1.2",
+    "lodash": "^4.17.4",
+    "opent2t": "^1.0.4",
+    "q": "^1.4.1"
+  }
+}
