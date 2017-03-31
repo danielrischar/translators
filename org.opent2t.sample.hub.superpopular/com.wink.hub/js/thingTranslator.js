@@ -212,6 +212,9 @@ class Translator {
                             .then((platformResponse) => {
                                 return platformResponse;
                             });
+                    }).catch((err) => {
+                        // Being logged in HubController already
+                        return Promise.reject(err);
                     }));
             }
         });
@@ -469,8 +472,7 @@ class Translator {
             })
             .catch((err) => {                
                 this.ConsoleLogger.error(`Request failed to: ${options.method} - ${options.url}`); 
-                request.reject(err);
-                return;
+                return Promise.reject(err);
             }).bind(this); //Pass in the context via bind() to use instance variables
             
     }

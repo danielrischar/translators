@@ -268,7 +268,6 @@ function createLightBulbResources(expand, bulbInfo) {
     // the bulb doesn't truly support it, but the conversion responsibility on POST belongs
     // to the translator.
     if (rgbValue) {
-         
          bulbInfo.supportedModes.push('rgb');
     }
 
@@ -488,10 +487,23 @@ function providerSchemaToPlatformSchema(providerSchema, expand) {
      * If the caller is subscribed to changes in state, then this is all moot as they would get a post back when
      * the last_reading state changes.
      */
-    bulbInfo.supportedModes = getProviderColourModes(providerSchema.last_reading);
-    var colorModel = bulbInfo.supportedModes.indexOf(stateReader.get('color_model')) > -1 ?
+    var winkModes = getProviderColourModes(providerSchema.last_reading);
+    var colorModel = winkModes.indexOf(stateReader.get('color_model')) > -1 ?
         stateReader.get('color_model') : 
         providerSchema.last_reading.color_model;
+
+    // Convert Wink color_model names into resource names
+    bulbInfo.supportedModes = winkModes.map((mode) => {
+        switch (mode) {
+            case 'hsb':
+            case 'rgb':
+                return mode;
+            case 'xy':
+                return 'csc';
+            case 'color_temperature':
+                return 'ct';
+       }
+    });
 
     switch(colorModel) {
         case 'hsb':
@@ -529,6 +541,7 @@ function providerSchemaToPlatformSchema(providerSchema, expand) {
             translator: 'opent2t-translator-com-wink-lightbulb',
             controlId: providerSchema['object_id']
         },
+        availability: stateReader.get('connection') ? 'online' : 'offline',
         pi: providerSchema['uuid'],
         mnmn: defaultValueIfEmpty(providerSchema['device_manufacturer'], "Wink"),
         mnmo: defaultValueIfEmpty(providerSchema['manufacturer_device_model'], "Light Bulb (Generic)"),
@@ -573,8 +586,7 @@ class Translator {
     get(expand, payload) {
         if (payload) {
             return providerSchemaToPlatformSchema(payload, expand);
-        }
-        else {
+        } else {
             return this.winkHub.getDeviceDetailsAsync(this.deviceType, this.controlId)
                 .then((response) => {
                     return providerSchemaToPlatformSchema(response.data, expand);
@@ -681,7 +693,17 @@ class Translator {
                 validateHasOwnProperty(resourceSchema, 'modes');
                 // Try to set the mode, a bad mode won't error.
                 // It will sit in desired_state for 2 minutes and then go away.
-                desired_state['color_model'] = resourceSchema.modes[0];
+                // Convert from resource modes to Wink colour names
+                switch (resourceSchema.modes[0]) {
+                    case 'ct':
+                        desired_state['color_model'] = 'color_temperature';
+                        break;
+                    case 'csc':
+                        desired_state['color_model'] = 'xy';
+                        break;
+                    default:
+                        desired_state['color_model'] = resourceSchema.modes[0];
+                }
                 break;
             case 'colourRGB':
             case 'colourChroma':
